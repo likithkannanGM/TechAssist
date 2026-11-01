@@ -8,6 +8,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
@@ -23,6 +24,7 @@ fun ChatScreen(
     val busy by viewModel.isBusy.collectAsState()
     val status by viewModel.status.collectAsState()
     var input by remember { mutableStateOf("") }
+    var quickOnly by rememberSaveable { mutableStateOf(false) }
     val listState = rememberLazyListState()
 
     // Keep the newest text in view while the answer streams in.
@@ -66,6 +68,10 @@ fun ChatScreen(
                 }
             }
 
+            Row(Modifier.padding(horizontal = 12.dp), verticalAlignment = Alignment.CenterVertically) {
+                Checkbox(checked = quickOnly, onCheckedChange = { quickOnly = it }, enabled = !busy)
+                Text("Passage only (instant, no language model)", style = MaterialTheme.typography.bodySmall)
+            }
             Row(
                 Modifier.fillMaxWidth().padding(12.dp),
                 verticalAlignment = Alignment.CenterVertically,
@@ -82,7 +88,7 @@ fun ChatScreen(
                     OutlinedButton(onClick = { viewModel.stop() }) { Text("Stop") }
                 } else {
                     Button(
-                        onClick = { viewModel.ask(input); input = "" },
+                        onClick = { viewModel.ask(input, quickOnly); input = "" },
                         enabled = input.isNotBlank(),
                     ) { Text("Send") }
                 }
@@ -105,6 +111,17 @@ private fun MessageBubble(message: ChatMessage) {
                     text = message.text.ifEmpty { if (message.isStreaming) "…" else "" },
                     style = MaterialTheme.typography.bodyMedium,
                 )
+                message.quote?.let { quote ->
+                    Surface(color = MaterialTheme.colorScheme.surface, shape = MaterialTheme.shapes.small) {
+                        Column(Modifier.padding(8.dp), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                            Text(
+                                "Closest passage" + (message.quoteSource?.let { " ($it)" } ?: ""),
+                                style = MaterialTheme.typography.labelMedium,
+                            )
+                            Text(quote, style = MaterialTheme.typography.bodySmall)
+                        }
+                    }
+                }
                 if (message.sources.isNotEmpty()) {
                     Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
                         Text("Sources", style = MaterialTheme.typography.labelMedium)

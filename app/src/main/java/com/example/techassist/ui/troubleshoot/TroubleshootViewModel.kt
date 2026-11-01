@@ -111,6 +111,6 @@ class TroubleshootViewModel(application: Application) : AndroidViewModel(applica
 
     private companion object {
         const val TOP_K = 3
-        const val MIN_SIMILARITY = 0.35f // placeholder; tuned in Phase 10
+        const val MIN_SIMILARITY = com.example.techassist.data.rag.RagConfig.MIN_SIMILARITY
     }
 }

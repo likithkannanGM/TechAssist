@@ -35,7 +35,9 @@ class RetrievalDebugViewModel(application: Application) : AndroidViewModel(appli
                 return@launch
             }
 
-            val hits = repository.searchChunks(query, topK = 5, minSimilarity = 0.35f)
+            val hits = repository.searchChunks(
+                query, topK = 5, minSimilarity = com.example.techassist.data.rag.RagConfig.MIN_SIMILARITY,
+            )
             _state.value = if (hits.isEmpty()) RetrievalUiState.NoRelevantMatch
             else RetrievalUiState.Results(hits)
         }

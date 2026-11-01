@@ -2,8 +2,11 @@ package com.example.techassist.data
 
 import android.content.Context
 import android.net.Uri
-import com.example.techassist.data.chunk.TextChunker
+import com.example.techassist.data.chunk.PassageChunker
 import com.example.techassist.data.embedding.EmbeddingEngine
+import com.example.techassist.data.embedding.EmbeddingEngineHolder
+import com.example.techassist.data.rag.RagConfig
+import com.example.techassist.data.search.RetrievalIndexHolder
 import com.example.techassist.data.search.VectorSearch
 import com.example.techassist.data.local.AppDatabase
 import com.example.techassist.data.local.ChunkEntity
@@ -17,6 +20,7 @@ import com.example.techassist.data.pdf.PdfTextExtractor
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.withContext
 import java.io.File
@@ -37,10 +41,7 @@ class DocumentRepository(private val context: Context) {
     private val chunkDao = db.chunkDao()
     private val embeddingDao = db.embeddingDao()
     // Loaded lazily and reused across imports; loading the ONNX session is the expensive part.
-    private var embeddingEngine: EmbeddingEngine? = null
-
-    private suspend fun getOrLoadEmbeddingEngine(): EmbeddingEngine =
-        embeddingEngine ?: EmbeddingEngine.load(context).also { embeddingEngine = it }
+    private suspend fun getOrLoadEmbeddingEngine(): EmbeddingEngine = EmbeddingEngineHolder.get(context)
 
     fun observeDocuments(): Flow<List<DocumentEntity>> = documentDao.observeAll()
 
@@ -88,7 +89,7 @@ class DocumentRepository(private val context: Context) {
                 pageDao.insertAll(result.pages.map { ExtractedPageEntity(documentId, it.pageNumber, it.text) })
 
                 val chunkEntities = result.pages.flatMap { page ->
-                    TextChunker.chunkPageText(page.text).mapIndexed { index, chunk ->
+                    PassageChunker.chunkPageText(page.text).mapIndexed { index, chunk ->
                         ChunkEntity(
                             id = UUID.randomUUID().toString(),
                             documentId = documentId,
@@ -115,6 +116,7 @@ class DocumentRepository(private val context: Context) {
                     emit(ImportProgress.GeneratingEmbeddings(index + 1, chunkEntities.size))
                 }
                 embeddingDao.insertAll(embeddingEntities)
+                RetrievalIndexHolder.invalidate()
 
                 val updated = DocumentEntity(
                     id = documentId, displayName = displayName, filePath = "documents/$documentId.pdf",
@@ -150,6 +152,7 @@ class DocumentRepository(private val context: Context) {
         chunkDao.deleteForDocument(document.id)
         embeddingDao.deleteForDocument(document.id)
         documentDao.delete(document)
+        RetrievalIndexHolder.invalidate()
         File(context.filesDir, document.filePath).delete()
     }
 
@@ -163,56 +166,39 @@ class DocumentRepository(private val context: Context) {
         val documentName: String,
         val pageNumber: Int,
         val text: String,
-        val score: Float,
+        val score: Float,            // fused relevance: meaning and keyword match
+        val dense: Float = 0f,       // meaning part (cosine similarity)
+        val lexical: Float = 0f,     // keyword part (0 to 1)
     )
 
     /**
-     * Embeds [query], scores it against stored chunk vectors (optionally restricted to one
-     * document), and returns up to [topK] hits scoring at or above [minSimilarity].
-     * An empty result means either no documents are indexed yet, or none were relevant enough —
-     * callers should distinguish those two cases for the user rather than treating both as "no results".
+     * Hybrid search: embeds [query], scores every chunk by meaning and by keyword match, and returns up to
+     * [topK] chunks whose combined score is at least [minSimilarity]. An empty result means either no
+     * documents are indexed, or nothing was relevant enough.
      */
     suspend fun searchChunks(
         query: String,
         topK: Int = 5,
-        minSimilarity: Float = 0.35f,
+        minSimilarity: Float = RagConfig.MIN_SIMILARITY,
         documentIdFilter: String? = null,
     ): List<RetrievedChunk> = withContext(Dispatchers.Default) {
-        val engine = getOrLoadEmbeddingEngine()
-        val queryVector = engine.embed(query)
+        val index = RetrievalIndexHolder.get(context)
+        if (index.size == 0) return@withContext emptyList()
 
-        val candidateEmbeddings = if (documentIdFilter != null) {
-            embeddingDao.getForDocument(documentIdFilter)
-        } else {
-            embeddingDao.getAll()
-        }
-        if (candidateEmbeddings.isEmpty()) return@withContext emptyList()
-
-        val vectors = candidateEmbeddings.map { FloatArrayConverters.toFloatArray(it.vector) }
-        val scored = VectorSearch.topK(queryVector, vectors, topK)
+        val queryVector = getOrLoadEmbeddingEngine().embed(query)
+        index.search(queryVector, query, topK, RagConfig.DENSE_WEIGHT, documentIdFilter)
             .filter { it.score >= minSimilarity }
-        if (scored.isEmpty()) return@withContext emptyList()
-
-        val hitChunkIds = scored.map { candidateEmbeddings[it.index].chunkId }
-        val chunksById = chunkDao.getByIds(hitChunkIds).associateBy { it.id }
-
-        val distinctDocumentIds = scored.map { candidateEmbeddings[it.index].documentId }.distinct()
-        val documentNamesById = distinctDocumentIds
-            .mapNotNull { id -> documentDao.getById(id)?.let { id to it.displayName } }
-            .toMap()
-
-        scored.mapNotNull { hit ->
-            val embeddingRow = candidateEmbeddings[hit.index]
-            val chunk = chunksById[embeddingRow.chunkId] ?: return@mapNotNull null
-            val documentName = documentNamesById[embeddingRow.documentId] ?: return@mapNotNull null
-            RetrievedChunk(
-                chunkId = chunk.id,
-                documentId = embeddingRow.documentId,
-                documentName = documentName,
-                pageNumber = chunk.pageNumber,
-                text = chunk.text,
-                score = hit.score,
-            )
-        }
+            .map { hit ->
+                RetrievedChunk(
+                    chunkId = hit.chunk.id,
+                    documentId = hit.chunk.documentId,
+                    documentName = hit.chunk.documentName,
+                    pageNumber = hit.chunk.pageNumber,
+                    text = hit.chunk.text,
+                    score = hit.score,
+                    dense = hit.dense,
+                    lexical = hit.lexical,
+                )
+            }
     }
 }

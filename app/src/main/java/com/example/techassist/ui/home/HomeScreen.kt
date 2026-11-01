@@ -31,8 +31,9 @@ private val homeActions = listOf(
     HomeAction("Document library", "Import and manage PDF documentation", 0), // 0 = available now
     HomeAction("Test retrieval (debug)", "See which chunks match a question, with scores", 0),
     HomeAction("Test local LLM (debug)", "Load a GGUF model and generate text on-device", 0),
+    HomeAction("Evaluation (debug)", "Measure retrieval quality and tune the relevance threshold", 0),
     HomeAction("Troubleshooting mode", "Guided diagnosis from documented procedures", 0 ),
-    HomeAction("Commissioning checklist", "Step-by-step checklist from manuals", 9),
+    HomeAction("Commissioning checklist", "Step-by-step checklist from manuals", 0),
 )
 
 @Composable
@@ -43,6 +44,8 @@ fun HomeScreen(
     onOpenLlmDebug: () -> Unit,
     onOpenChat: () -> Unit,
     onOpenTroubleshoot: () -> Unit,
+    onOpenChecklists: () -> Unit,
+    onOpenEvaluation: () -> Unit,
 ) {
     Scaffold { innerPadding ->
         Column(
@@ -64,6 +67,8 @@ fun HomeScreen(
                         "Test local LLM (debug)" -> onOpenLlmDebug
                         "New conversation" -> onOpenChat
                         "Troubleshooting mode" -> onOpenTroubleshoot
+                        "Commissioning checklist" -> onOpenChecklists
+                        "Evaluation (debug)" -> onOpenEvaluation
                         else -> null
                     },
                 )

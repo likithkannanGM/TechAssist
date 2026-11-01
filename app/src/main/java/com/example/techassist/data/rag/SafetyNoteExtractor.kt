@@ -46,8 +46,10 @@ object SafetyNoteExtractor {
         return notes
     }
 
-    /** Returns (LEVEL, text after the label) if the line starts a safety note, else null. */
-    private fun matchStart(line: String): Pair<String, String>? {
+    /** True if the line starts a WARNING/CAUTION/DANGER note. */
+    fun isSafetyLabel(line: String): Boolean = matchStart(line) != null
+
+    /** Returns (LEVEL, text after the label) if the line starts a safety note, else null. */    private fun matchStart(line: String): Pair<String, String>? {
         UPPER.find(line)?.let { return it.groupValues[1] to it.groupValues[2].trim() }
         TITLED.find(line)?.let { return it.groupValues[1].uppercase() to it.groupValues[2].trim() }
         return null

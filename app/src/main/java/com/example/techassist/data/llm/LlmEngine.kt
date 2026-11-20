@@ -2,10 +2,15 @@ package com.example.techassist.data.llm
 
 import kotlinx.coroutines.flow.Flow
 
-/** The rest of the app depends on this, not on llama.cpp, so the runtime can be swapped later. */
 interface LlmEngine : AutoCloseable {
     val isLoaded: Boolean
+    /** When the model was last used, in SystemClock.elapsedRealtime() milliseconds (0 = never). */
+    val lastUsedAtMillis: Long
     suspend fun load(modelPath: String)
-    /** Streams the reply as text pieces. Cancelling the collector stops generation. */
     fun generate(systemPrompt: String, userMessage: String): Flow<String>
+
+    /** One tiny generation that finishes by itself, so the model is read from storage now and not during the first answer. */
+    suspend fun warmUp() {
+        generate("Reply with the single word OK.", "Say OK.").collect { }
+    }
 }

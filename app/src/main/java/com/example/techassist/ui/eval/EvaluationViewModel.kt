@@ -140,6 +140,8 @@ class EvaluationViewModel(application: Application) : AndroidViewModel(applicati
         if (!engine.isLoaded) {
             _state.update { it.copy(progress = "Loading model…") }
             engine.load(store.modelFile().absolutePath)
+            _state.update { it.copy(progress = "Warming up…") }
+            engine.warmUp()
         }
 
         val lines = mutableListOf<String>()

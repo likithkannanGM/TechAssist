@@ -81,7 +81,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         }
 
         _status.value = "Searching documents…"
-        val hits = repository.searchChunks(question, topK = TOP_K, minSimilarity = RagConfig.MIN_SIMILARITY)
+        val hits = repository.searchChunks(question, topK = TOP_K, minSimilarity = RagConfig.WEAK_SIMILARITY)
         if (hits.isEmpty()) {
             // Weak evidence: refuse without calling the model, so it cannot make something up.
             addAssistant(RagPromptBuilder.NOT_ENOUGH_INFO)
@@ -89,9 +89,13 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         }
 
         // Show the closest passage straight away; the language model, if used, can take a while.
+        val confident = hits.first().score >= RagConfig.MIN_SIMILARITY
         val started = SystemClock.elapsedRealtime()
         val embedder = EmbeddingEngineHolder.get(getApplication<Application>())
-        val passage = PassageSelector.select(question, hits, RagConfig.DENSE_WEIGHT) { embedder.embed(it) }
+        val selection = PassageSelector.selectWithContext(
+            question, hits, RagConfig.DENSE_WEIGHT, RagConfig.PROMPT_CHARS_PER_CHUNK,
+        ) { embedder.embed(it) }
+        val passage = selection.passage
         Log.i(TAG, "Closest passage took ${SystemClock.elapsedRealtime() - started} ms")
 
         val id = nextId++
@@ -99,15 +103,20 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             ChatMessage(
                 id = id,
                 role = Role.ASSISTANT,
-                text = "",
+                text = if (confident) "" else "Weak match: the passage below may not answer your question. Please check the manual page.",
                 sources = RagPromptBuilder.sourceLabels(hits),
                 quote = passage?.text,
                 quoteSource = passage?.source,
-                isStreaming = !quickOnly,
+                isStreaming = !quickOnly && confident,
             )
         )
-        if (quickOnly) return
+        if (quickOnly || !confident) return
 
+        if (engine.isLoaded && SystemClock.elapsedRealtime() - engine.lastUsedAtMillis > RagConfig.MODEL_IDLE_UNLOAD_MS) {
+            _status.value = "Refreshing model…"
+            engine.close()
+        }
+        val loadStart = SystemClock.elapsedRealtime()
         if (!engine.isLoaded) {
             if (!store.exists()) {
                 setText(id, "No language model is installed, so only the closest passage is shown. " +
@@ -116,13 +125,34 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             }
             _status.value = "Loading model…"
             engine.load(store.modelFile().absolutePath)
+            _status.value = "Warming up…"
+            engine.warmUp()
+            Log.i(TAG, "Model ready in ${SystemClock.elapsedRealtime() - loadStart} ms")
         }
 
-        val prompt = RagPromptBuilder.build(question, hits)
+        val prompt = RagPromptBuilder.build(
+            question, selection.focused.take(RagConfig.PROMPT_CHUNKS), RagConfig.PROMPT_CHARS_PER_CHUNK,
+        )
         _status.value = "Generating…"
+        val genStart = SystemClock.elapsedRealtime()
+        var firstAt = 0L
+        var pieces = 0
         engine.generate(prompt.system, prompt.user).collect { piece ->
+            if (pieces == 0) firstAt = SystemClock.elapsedRealtime()
+            pieces++
             _messages.update { list -> list.map { if (it.id == id) it.copy(text = it.text + piece) else it } }
         }
+        val end = SystemClock.elapsedRealtime()
+        val finalText = _messages.value.firstOrNull { it.id == id }?.text.orEmpty()
+        if (passage != null && finalText.trim().startsWith(RagPromptBuilder.NOT_ENOUGH_INFO.take(30))) {
+            // The model declined although a matching passage exists, so point to the passage instead.
+            setText(id, "The language model found no clear answer in these pages. Check the closest passage above.")
+        }
+        Log.i(
+            TAG,
+            "Answer: prompt ${prompt.system.length + prompt.user.length} chars, first piece ${firstAt - genStart} ms, " +
+                    "total ${end - genStart} ms, $pieces pieces",
+        )
     }
 
     private fun setText(id: Long, text: String) =

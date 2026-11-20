@@ -24,7 +24,7 @@ fun ChatScreen(
     val busy by viewModel.isBusy.collectAsState()
     val status by viewModel.status.collectAsState()
     var input by remember { mutableStateOf("") }
-    var quickOnly by rememberSaveable { mutableStateOf(false) }
+    var quickOnly by rememberSaveable { mutableStateOf(true) } 
     val listState = rememberLazyListState()
 
     // Keep the newest text in view while the answer streams in.

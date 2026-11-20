@@ -17,45 +17,62 @@ object PassageSelector {
 
     data class Passage(val text: String, val source: String, val score: Float)
 
-    private class Candidate(val lines: List<String>, val index: Int, val source: String)
+    /** [passage] is the best single sentence; [focused] are the top chunks cut down to the lines around their best match. */
+    class Selection(val passage: Passage?, val focused: List<RetrievedChunk>)
+
+    private class Candidate(val hitIndex: Int, val lines: List<String>, val lineIndex: Int, val source: String)
 
     suspend fun select(
         question: String,
         hits: List<RetrievedChunk>,
         denseWeight: Float,
         embed: suspend (String) -> FloatArray,
-    ): Passage? {
+    ): Passage? = selectWithContext(question, hits, denseWeight, Int.MAX_VALUE, embed).passage
+
+    suspend fun selectWithContext(
+        question: String,
+        hits: List<RetrievedChunk>,
+        denseWeight: Float,
+        contextChars: Int,
+        embed: suspend (String) -> FloatArray,
+    ): Selection {
+        val top = hits.take(MAX_HITS)
         val candidates = ArrayList<Candidate>()
-        for (hit in hits.take(MAX_HITS)) {
+        top.forEachIndexed { h, hit ->
             val lines = hit.text.lines().map { it.trim() }.filter { it.isNotEmpty() }
             val source = "${hit.documentName}, p. ${hit.pageNumber}"
             lines.forEachIndexed { i, line ->
-
                 if (line.length >= MIN_LINE_CHARS && candidates.size < MAX_LINES) {
-                    candidates += Candidate(lines, i, source)
+                    candidates += Candidate(h, lines, i, source)
                 }
             }
         }
-        if (candidates.isEmpty()) return null
+        if (candidates.isEmpty()) return Selection(null, top.map { it.copy(text = it.text.take(contextChars)) })
 
-        val texts = candidates.map { it.lines[it.index] }
+        val texts = candidates.map { it.lines[it.lineIndex] }
         val lexical = LexicalIndex(texts).scores(question)
         val queryVector = embed(question)
-
-        var best = -1
-        var bestScore = -1f
-        for (i in candidates.indices) {
+        val scores = FloatArray(candidates.size) { i ->
             val dense = max(VectorSearch.cosineSimilarity(queryVector, embed(texts[i])), 0f)
-            val score = denseWeight * dense + (1f - denseWeight) * lexical[i]
-            if (score > bestScore) {
-                bestScore = score
-                best = i
-            }
+            denseWeight * dense + (1f - denseWeight) * lexical[i]
         }
-        if (best < 0 || bestScore < MIN_SCORE) return null
 
-        val c = candidates[best]
-        return Passage(rebuildSentence(c.lines, c.index).take(MAX_CHARS), c.source, bestScore)
+        val best = scores.indices.maxByOrNull { scores[it] } ?: 0
+        val passage = if (scores[best] >= MIN_SCORE) {
+            val c = candidates[best]
+            Passage(rebuildSentence(c.lines, c.lineIndex).take(MAX_CHARS), c.source, scores[best])
+        } else null
+
+        val focused = top.mapIndexed { h, hit ->
+            val bestForHit = candidates.indices.filter { candidates[it].hitIndex == h }.maxByOrNull { scores[it] }
+            val text = if (bestForHit == null) {
+                hit.text.take(contextChars)
+            } else {
+                FocusedContext.window(candidates[bestForHit].lines, candidates[bestForHit].lineIndex, contextChars)
+            }
+            hit.copy(text = text)
+        }
+        return Selection(passage, focused)
     }
 
     /** PDF text is hard-wrapped: long lines that do not end a sentence continue on the next line. Short table rows stay alone. */
@@ -63,7 +80,6 @@ object PassageSelector {
         var start = index
         var steps = 0
         while (start > 0 && steps < MAX_EXTENSION && isWrapped(lines[start - 1])) { start--; steps++ }
-
         var end = index
         steps = 0
         while (end < lines.lastIndex && steps < MAX_EXTENSION && isWrapped(lines[end])) { end++; steps++ }

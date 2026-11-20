@@ -8,7 +8,7 @@ object RagPromptBuilder {
 
     data class Prompt(val system: String, val user: String)
 
-    fun build(question: String, hits: List<RetrievedChunk>): Prompt {
+    fun build(question: String, hits: List<RetrievedChunk>, maxCharsPerChunk: Int = MAX_CHARS_PER_CHUNK): Prompt {
         val system = buildString {
             appendLine("You answer technical questions using only the context below.")
             appendLine("If the context does not contain the answer, reply exactly: $NOT_ENOUGH_INFO")
@@ -17,7 +17,7 @@ object RagPromptBuilder {
             appendLine("Context:")
             hits.forEachIndexed { i, hit ->
                 appendLine("[${i + 1}] (${hit.documentName}, p. ${hit.pageNumber})")
-                appendLine(trimChunk(hit.text))
+                appendLine(trimChunk(hit.text, maxCharsPerChunk))
                 appendLine()
             }
         }.trimEnd()
@@ -28,8 +28,8 @@ object RagPromptBuilder {
     fun sourceLabels(hits: List<RetrievedChunk>): List<String> =
         hits.mapIndexed { i, hit -> "[${i + 1}] ${hit.documentName}, p. ${hit.pageNumber}" }
 
-    internal fun trimChunk(text: String): String {
+    internal fun trimChunk(text: String, maxChars: Int = MAX_CHARS_PER_CHUNK): String {
         val t = text.trim()
-        return if (t.length <= MAX_CHARS_PER_CHUNK) t else t.take(MAX_CHARS_PER_CHUNK).trimEnd() + "…"
+        return if (t.length <= maxChars) t else t.take(maxChars).trimEnd() + "…"
     }
 }
